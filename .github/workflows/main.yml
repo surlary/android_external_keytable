@@ -44,15 +44,7 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y build-essential bc bison flex libncurses5-dev
-
-    - name: Set up cross compilation tools
-      run: |
-        # Install cross compilation tools for ARM and ARM64
-        sudo apt-get install -y gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf
-
-        # Verify clang installation
-        ${CLANG_PATH}/clang --version
+        sudo apt-get install -y build-essential bc bison flex libncurses5-dev unzip wget
 
     - name: Compile IR Keytable
       run: |
