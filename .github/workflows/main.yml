@@ -1,0 +1,142 @@
+name: Cross Compile Android IR Keytable
+
+on:
+  workflow_dispatch:
+    inputs:
+      clang_version:
+        description: 'Clang Version'
+        required: true
+        default: '11.0.1'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    - name: Set up environment variables
+      run: |
+        echo "CLANG_VERSION=${{ github.event.inputs.clang_version }}" >> $GITHUB_ENV
+
+    - name: Cache Clang compiler
+      id: cache-clang
+      uses: actions/cache@v3
+      with:
+        path: clang+llvm-${{ env.CLANG_VERSION }}-x86_64-linux-gnu-ubuntu-20.10
+        key: clang-${{ github.event.inputs.clang_version }}-ubuntu-20.10
+
+    - name: Download and extract Clang
+      if: steps.cache-clang.outputs.cache-hit != 'true'
+      run: |
+        wget https://github.com/llvm/llvm-project/releases/download/llvmorg-${{ env.CLANG_VERSION }}/clang+llvm-${{ env.CLANG_VERSION }}-x86_64-linux-gnu-ubuntu-20.10.tar.xz
+        tar -xf clang+llvm-${{ env.CLANG_VERSION }}-x86_64-linux-gnu-ubuntu-20.10.tar.xz
+        echo "CLANG_PATH=${PWD}/clang+llvm-${{ env.CLANG_VERSION }}-x86_64-linux-gnu-ubuntu-20.10/bin" >> $GITHUB_ENV
+        echo "${PWD}/clang+llvm-${{ env.CLANG_VERSION }}-x86_64-linux-gnu-ubuntu-20.10/bin" >> $GITHUB_PATH
+
+    - name: Set CLANG_PATH for cache hit
+      if: steps.cache-clang.outputs.cache-hit == 'true'
+      run: |
+        echo "CLANG_PATH=${PWD}/clang+llvm-${{ env.CLANG_VERSION }}-x86_64-linux-gnu-ubuntu-20.10/bin" >> $GITHUB_ENV
+        echo "${PWD}/clang+llvm-${{ env.CLANG_VERSION }}-x86_64-linux-gnu-ubuntu-20.10/bin" >> $GITHUB_PATH
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential libelf-dev libssl-dev bc bison flex libncurses5-dev libc6-dev-arm64-cross libc6-dev-armel-cross
+
+    - name: Set up cross compilation tools
+      run: |
+        # Install cross compilation tools for ARM and ARM64
+        sudo apt-get install -y gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf
+
+        # Verify clang installation
+        ${CLANG_PATH}/clang --version
+
+    - name: Compile IR Keytable
+      run: |
+        # Set environment variables for cross compilation
+        export CC=${CLANG_PATH}/clang
+        export CXX=${CLANG_PATH}/clang++
+        export STRIP=${CLANG_PATH}/llvm-strip
+        
+        # Show compiler version and target
+        echo "Compiler version:"
+        ${CC} --version
+        
+        # Compile for ARM64
+        echo "Compiling ir-keytable for ARM64 with Android-specific flags..."
+        ${CC} \
+          --target=aarch64-linux-android \
+          -static \
+          -pie \
+          -fPIE \
+          -fPIC \
+          -DANDROID \
+          -D__ANDROID__ \
+          -D_GNU_SOURCE \
+          -D_POSIX_C_SOURCE=200809L \
+          -DANDROID_CONFIG_H \
+          -I. \
+          -o ir-keytable-arm64 \
+          keytable.c \
+          -lm -lc -lz
+        
+        # Check if compilation was successful
+        if [ $? -ne 0 ]; then
+          echo "ARM64 Compilation failed!"
+          exit 1
+        fi
+        
+        # Compile for ARM
+        echo "Compiling ir-keytable for ARM with Android-specific flags..."
+        ${CC} \
+          --target=armv7-linux-androideabi \
+          -static \
+          -pie \
+          -fPIE \
+          -fPIC \
+          -DANDROID \
+          -D__ANDROID__ \
+          -D_GNU_SOURCE \
+          -D_POSIX_C_SOURCE=200809L \
+          -DANDROID_CONFIG_H \
+          -I. \
+          -o ir-keytable-arm \
+          keytable.c \
+          -lm -lc -lz
+        
+        # Check if compilation was successful
+        if [ $? -ne 0 ]; then
+          echo "ARM Compilation failed!"
+          exit 1
+        fi
+        
+        # Verify the binaries
+        echo "Verifying the compiled ARM64 binary..."
+        file ir-keytable-arm64
+        ls -la ir-keytable-arm64
+        echo "Checking dynamic dependencies for ARM64:"
+        ldd ir-keytable-arm64 || echo "No dynamic dependencies (statically linked)"
+        
+        echo "Verifying the compiled ARM binary..."
+        file ir-keytable-arm
+        ls -la ir-keytable-arm
+        echo "Checking dynamic dependencies for ARM:"
+        ldd ir-keytable-arm || echo "No dynamic dependencies (statically linked)"
+        
+        # Strip debug symbols
+        ${STRIP} --strip-debug ir-keytable-arm64
+        ${STRIP} --strip-debug ir-keytable-arm
+        echo "Binaries after stripping debug symbols:"
+        ls -la ir-keytable-arm64 ir-keytable-arm
+
+    - name: Upload compiled binary
+      uses: actions/upload-artifact@v4
+      with:
+        name: ir-keytable-binary
+        path: |
+          ir-keytable-arm64
+          ir-keytable-arm
+
