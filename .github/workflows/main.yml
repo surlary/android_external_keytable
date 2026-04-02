@@ -20,31 +20,31 @@ jobs:
       run: |
         echo "CLANG_VERSION=${{ github.event.inputs.clang_version }}" >> $GITHUB_ENV
 
-    - name: Cache Clang compiler
-      id: cache-clang
+    - name: Cache Android NDK
+      id: cache-ndk
       uses: actions/cache@v3
       with:
-        path: clang+llvm-${{ env.CLANG_VERSION }}-x86_64-linux-gnu-ubuntu-20.10
-        key: clang-${{ github.event.inputs.clang_version }}-ubuntu-20.10
+        path: android-ndk-r25b
+        key: android-ndk-r25b-linux
 
-    - name: Download and extract Clang
-      if: steps.cache-clang.outputs.cache-hit != 'true'
+    - name: Download and setup Android NDK
+      if: steps.cache-ndk.outputs.cache-hit != 'true'
       run: |
-        wget https://github.com/llvm/llvm-project/releases/download/llvmorg-${{ env.CLANG_VERSION }}/clang+llvm-${{ env.CLANG_VERSION }}-x86_64-linux-gnu-ubuntu-20.10.tar.xz
-        tar -xf clang+llvm-${{ env.CLANG_VERSION }}-x86_64-linux-gnu-ubuntu-20.10.tar.xz
-        echo "CLANG_PATH=${PWD}/clang+llvm-${{ env.CLANG_VERSION }}-x86_64-linux-gnu-ubuntu-20.10/bin" >> $GITHUB_ENV
-        echo "${PWD}/clang+llvm-${{ env.CLANG_VERSION }}-x86_64-linux-gnu-ubuntu-20.10/bin" >> $GITHUB_PATH
+        wget https://dl.google.com/android/repository/android-ndk-r25b-linux.zip
+        unzip android-ndk-r25b-linux.zip
+        echo "ANDROID_NDK_ROOT=${PWD}/android-ndk-r25b" >> $GITHUB_ENV
 
-    - name: Set CLANG_PATH for cache hit
-      if: steps.cache-clang.outputs.cache-hit == 'true'
+    - name: Set up Android NDK toolchain
       run: |
-        echo "CLANG_PATH=${PWD}/clang+llvm-${{ env.CLANG_VERSION }}-x86_64-linux-gnu-ubuntu-20.10/bin" >> $GITHUB_ENV
-        echo "${PWD}/clang+llvm-${{ env.CLANG_VERSION }}-x86_64-linux-gnu-ubuntu-20.10/bin" >> $GITHUB_PATH
+        export ANDROID_NDK_ROOT=${PWD}/android-ndk-r25b
+        TOOLCHAIN=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64
+        echo "$TOOLCHAIN/bin" >> $GITHUB_PATH
+        echo "ANDROID_NDK_ROOT=${ANDROID_NDK_ROOT}" >> $GITHUB_ENV
 
     - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y build-essential libelf-dev libssl-dev bc bison flex libncurses5-dev libc6-dev-arm64-cross libc6-dev-armel-cross
+        sudo apt-get install -y build-essential bc bison flex libncurses5-dev
 
     - name: Set up cross compilation tools
       run: |
@@ -56,21 +56,25 @@ jobs:
 
     - name: Compile IR Keytable
       run: |
-        # Set environment variables for cross compilation
-        export CC=${CLANG_PATH}/clang
-        export CXX=${CLANG_PATH}/clang++
-        export STRIP=${CLANG_PATH}/llvm-strip
+        # Set up Android NDK toolchain
+        export ANDROID_NDK_ROOT=${PWD}/android-ndk-r25b
+        TOOLCHAIN=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64
+        
+        # ARM64 compilation for Android TV 11 (API 30)
+        export AR=$TOOLCHAIN/bin/llvm-ar
+        export CC=$TOOLCHAIN/bin/aarch64-linux-android30-clang
+        export CXX=$TOOLCHAIN/bin/aarch64-linux-android30-clang++
+        export LD=$TOOLCHAIN/bin/ld
+        export STRIP=$TOOLCHAIN/bin/llvm-strip
         
         # Show compiler version and target
         echo "Compiler version:"
         ${CC} --version
         
-        # Compile for ARM64
-        echo "Compiling ir-keytable for ARM64 with Android-specific flags..."
+        # Compile for ARM64 (Android TV 11 - API 30)
+        echo "Compiling ir-keytable for ARM64 (Android TV 11 - API 30)..."
         ${CC} \
-          --target=aarch64-linux-android \
-          -static \
-          -pie \
+          -target aarch64-linux-android30 \
           -fPIE \
           -fPIC \
           -DANDROID \
@@ -81,7 +85,7 @@ jobs:
           -I. \
           -o ir-keytable-arm64 \
           keytable.c \
-          -lm -lc -lz
+          -lm -lz
         
         # Check if compilation was successful
         if [ $? -ne 0 ]; then
@@ -89,12 +93,13 @@ jobs:
           exit 1
         fi
         
-        # Compile for ARM
-        echo "Compiling ir-keytable for ARM with Android-specific flags..."
+        # Compile for ARM (Android TV 11 - API 30)
+        echo "Compiling ir-keytable for ARM (Android TV 11 - API 30)..."
+        export CC=$TOOLCHAIN/bin/armv7a-linux-androideabi30-clang
+        export CXX=$TOOLCHAIN/bin/armv7a-linux-androideabi30-clang++
+        
         ${CC} \
-          --target=armv7-linux-androideabi \
-          -static \
-          -pie \
+          -target armv7a-linux-androideabi30 \
           -fPIE \
           -fPIC \
           -DANDROID \
@@ -105,7 +110,7 @@ jobs:
           -I. \
           -o ir-keytable-arm \
           keytable.c \
-          -lm -lc -lz
+          -lm -lz
         
         # Check if compilation was successful
         if [ $? -ne 0 ]; then
@@ -117,19 +122,19 @@ jobs:
         echo "Verifying the compiled ARM64 binary..."
         file ir-keytable-arm64
         ls -la ir-keytable-arm64
-        echo "Checking dynamic dependencies for ARM64:"
-        ldd ir-keytable-arm64 || echo "No dynamic dependencies (statically linked)"
+        echo "Checking ELF headers for ARM64:"
+        readelf -h ir-keytable-arm64 | grep -E "Class|Machine|Type" || echo "Unable to read ELF headers"
         
         echo "Verifying the compiled ARM binary..."
         file ir-keytable-arm
         ls -la ir-keytable-arm
-        echo "Checking dynamic dependencies for ARM:"
-        ldd ir-keytable-arm || echo "No dynamic dependencies (statically linked)"
+        echo "Checking ELF headers for ARM:"
+        readelf -h ir-keytable-arm | grep -E "Class|Machine|Type" || echo "Unable to read ELF headers"
         
         # Strip debug symbols
-        ${STRIP} --strip-debug ir-keytable-arm64
-        ${STRIP} --strip-debug ir-keytable-arm
-        echo "Binaries after stripping debug symbols:"
+        ${STRIP} ir-keytable-arm64
+        ${STRIP} ir-keytable-arm
+        echo "Binaries after stripping:"
         ls -la ir-keytable-arm64 ir-keytable-arm
 
     - name: Upload compiled binary
