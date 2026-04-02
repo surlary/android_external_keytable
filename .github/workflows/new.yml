@@ -1,4 +1,4 @@
-name: Cross Compile Android IR Keytable
+name: IR Keytable
 
 on:
   workflow_dispatch:
